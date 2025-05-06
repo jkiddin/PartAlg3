@@ -5,6 +5,24 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import re
+import sys
+import shutil
+
+def check_compiler_availability():
+    """
+    Check if g++ compiler is available in the system.
+    Returns True if the compiler is available, False otherwise.
+    """
+    try:
+        # Using 'where' on Windows and 'which' on Unix-like systems
+        check_cmd = 'where' if platform.system() == 'Windows' else 'which'
+        subprocess.run([check_cmd, 'g++'], 
+                      check=True, 
+                      stdout=subprocess.PIPE, 
+                      stderr=subprocess.PIPE)
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
 
 def normalize_path(path):
     """
@@ -22,18 +40,45 @@ def run_cpp_program(input_file, output_file):
     :param input_file: Path to the input adjacency matrix file
     :param output_file: Path to the file where the C++ program writes its analysis
     """
-    # Compile the C++ source file into an executable called 'pseudo_knots'.
-    compile_cmd = ['g++', 'Pseudo-knots-corr5-01-19.cpp', '-o', 'pseudo_knots']
-    subprocess.run(compile_cmd, check=True)
+    # Check if g++ compiler is available
+    if not check_compiler_availability():
+        print("Error: g++ compiler not found in your system PATH.")
+        print("Please install MinGW (for Windows) or g++ (for Unix-like systems).")
+        print("Windows users: After installation, make sure to add the MinGW bin directory to your PATH.")
+        sys.exit(1)
 
-    # Choose the correct command depending on the OS (to handle Windows vs. Unix-like systems).
-    run_cmd = (
-        ['./pseudo_knots', input_file, output_file]
-        if platform.system() != 'Windows'
-        else ['pseudo_knots', input_file, output_file]
-    )
-    # Execute the compiled C++ program with the specified arguments.
-    subprocess.run(run_cmd, check=True)
+    # Get the executable extension based on the OS
+    exe_extension = '.exe' if platform.system() == 'Windows' else ''
+    executable = f'pseudo_knots{exe_extension}'
+    
+    # Compile the C++ source file into an executable
+    print(f"Compiling C++ program...")
+    compile_cmd = ['g++', 'Pseudo-knots-corr5-01-19.cpp', '-o', executable]
+    
+    try:
+        subprocess.run(compile_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print("Compilation successful.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error compiling C++ program: {e}")
+        print(f"Error details: {e.stderr.decode('utf-8')}")
+        sys.exit(1)
+
+    # Choose the correct command depending on the OS
+    if platform.system() == 'Windows':
+        run_cmd = [os.path.join('.', executable), input_file, output_file]
+    else:
+        run_cmd = [f'./{executable}', input_file, output_file]
+    
+    # Execute the compiled C++ program with the specified arguments
+    print(f"Running C++ program with input file: {input_file}")
+    print(f"Output will be written to: {output_file}")
+    
+    try:
+        subprocess.run(run_cmd, check=True)
+        print("C++ program executed successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing C++ program: {e}")
+        sys.exit(1)
 
 def extract_blocks_with_types(output_file):
     """
@@ -56,41 +101,45 @@ def extract_blocks_with_types(output_file):
         "this block represents a pseudoknot": "Non-recursive PK",
     }
 
-    with open(output_file, 'r') as file:
-        block_started = False
-        for line in file:
-            # Detect start of a new block.
-            if "New Block" in line:
-                # If there is an existing block being built, close it out first.
-                if current_block:
-                    blocks.append(current_block)
-                    # If we didn't detect a type for the previous block, mark it as 'Unknown'.
-                    if len(block_types) < len(blocks):
-                        block_types.append("Unknown")
-                current_block = []
-                block_started = True
+    try:
+        with open(output_file, 'r') as file:
+            block_started = False
+            for line in file:
+                # Detect start of a new block.
+                if "New Block" in line:
+                    # If there is an existing block being built, close it out first.
+                    if current_block:
+                        blocks.append(current_block)
+                        # If we didn't detect a type for the previous block, mark it as 'Unknown'.
+                        if len(block_types) < len(blocks):
+                            block_types.append("Unknown")
+                    current_block = []
+                    block_started = True
 
-            # Capture the edges (v1, v2) once a block is in progress.
-            elif block_started and re.search(r'\(\d+,\d+\)', line):
-                matches = re.findall(r'\((\d+),(\d+)\)', line)
-                for match in matches:
-                    v1, v2 = int(match[0]), int(match[1])
-                    current_block.append((v1, v2))
+                # Capture the edges (v1, v2) once a block is in progress.
+                elif block_started and re.search(r'\(\d+,\d+\)', line):
+                    matches = re.findall(r'\((\d+),(\d+)\)', line)
+                    for match in matches:
+                        v1, v2 = int(match[0]), int(match[1])
+                        current_block.append((v1, v2))
 
-            # Check if the line contains any known type keywords and assign the appropriate label.
-            elif any(phrase in line for phrase in type_mapping.keys()):
-                for phrase, label in type_mapping.items():
-                    if phrase in line:
-                        block_types.append(label)
-                        break
+                # Check if the line contains any known type keywords and assign the appropriate label.
+                elif any(phrase in line for phrase in type_mapping.keys()):
+                    for phrase, label in type_mapping.items():
+                        if phrase in line:
+                            block_types.append(label)
+                            break
 
-            # If "Summary information" appears, that means we are done reading blocks.
-            elif "Summary information" in line:
-                if current_block:
-                    blocks.append(current_block)
-                    if len(block_types) < len(blocks):
-                        block_types.append("Unknown")
-                break
+                # If "Summary information" appears, that means we are done reading blocks.
+                elif "Summary information" in line:
+                    if current_block:
+                        blocks.append(current_block)
+                        if len(block_types) < len(blocks):
+                            block_types.append("Unknown")
+                    break
+    except Exception as e:
+        print(f"Error reading output file: {e}")
+        sys.exit(1)
 
     return blocks, block_types
 
@@ -102,12 +151,16 @@ def read_adjacency_matrix(input_file):
     :param input_file: Path to the file containing the adjacency matrix
     :return: A 2D list (list of lists) of integers representing the adjacency matrix
     """
-    with open(input_file, 'r') as file:
-        matrix = []
-        for line in file:
-            row = list(map(int, line.strip().split()))
-            matrix.append(row)
-    return matrix
+    try:
+        with open(input_file, 'r') as file:
+            matrix = []
+            for line in file:
+                row = list(map(int, line.strip().split()))
+                matrix.append(row)
+        return matrix
+    except Exception as e:
+        print(f"Error reading adjacency matrix: {e}")
+        sys.exit(1)
 
 def add_edges_from_matrix(G, matrix):
     """
@@ -180,11 +233,23 @@ def draw_combined_graph(matrix, blocks, block_types, G):
         }
         nx.draw_networkx_edge_labels(G_block, pos, edge_labels=edge_labels, font_size=10, font_color="red")
 
+        # Add block type as a title above the block
+        y_pos = max([pos[node][1] for node in G_block.nodes]) + 0.2
+        x_pos = sum([pos[node][0] for node in G_block.nodes]) / len(G_block.nodes)
+        plt.text(x_pos, y_pos, f"Block Type: {block_type}", 
+                horizontalalignment='center', fontsize=12, fontweight='bold')
+
     # Adjust spacing and show the plotted figure.
     plt.tight_layout()
+    plt.savefig("graph_visualization.png")  # Save the figure before showing it
+    print("Graph visualization saved as 'graph_visualization.png'")
     plt.show()
 
 if __name__ == "__main__":
+    print("=" * 80)
+    print("Pseudo-knot Analysis and Visualization Tool")
+    print("=" * 80)
+    
     # Prompt the user for the file paths. If blank, use defaults in the current working directory.
     input_file = input("Enter the input file (or leave blank if you have a 'matrix.txt' in the current dir): ")
     output_file = input("Enter the output file (or leave blank to use the default): ")
@@ -203,17 +268,27 @@ if __name__ == "__main__":
 
     # Make sure the input file actually exists before proceeding.
     if not os.path.exists(input_file):
-        raise FileNotFoundError(f"Input file not found: {input_file}")
+        print(f"Error: Input file not found: {input_file}")
+        sys.exit(1)
 
     # Run the external C++ program to generate output and graph data.
     run_cpp_program(input_file, output_file)
 
     # Verify that the output file was created.
     if not os.path.exists(output_file):
-        raise FileNotFoundError(f"Output file not found: {output_file}")
+        print(f"Error: Output file not found: {output_file}")
+        sys.exit(1)
 
     # Extract the blocks (subgraphs) and their types from the output.
     blocks, block_types = extract_blocks_with_types(output_file)
+    
+    if not blocks:
+        print("No blocks were extracted from the output file.")
+        sys.exit(1)
+    
+    print(f"Extracted {len(blocks)} blocks from the output file:")
+    for i, (block, block_type) in enumerate(zip(blocks, block_types)):
+        print(f"  Block {i+1}: {block_type} with {len(block)} edges")
 
     # Read the original adjacency matrix.
     matrix = read_adjacency_matrix(input_file)
@@ -223,4 +298,5 @@ if __name__ == "__main__":
     add_edges_from_matrix(G, matrix)
 
     # Visualize each block in a combined layout.
+    print("Generating visualization...")
     draw_combined_graph(matrix, blocks, block_types, G)
